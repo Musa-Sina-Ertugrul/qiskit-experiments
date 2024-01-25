@@ -764,10 +764,10 @@ class ExperimentData:
         return self._db_data.metadata["_source"]
 
     # Data addition and deletion
-
     def add_data(
         self,
         data: Union[Result, List[Result], Dict, List[Dict]],
+        **kwargs
     ) -> None:
         """Add experiment data.
 
@@ -792,13 +792,58 @@ class ExperimentData:
             data = [data]
 
         # Directly add non-job data
-        for datum in data:
-            if isinstance(datum, dict):
-                self._add_canonical_dict_data(datum)
-            elif isinstance(datum, Result):
-                self._add_result_data(datum)
-            else:
-                raise TypeError(f"Invalid data type {type(datum)}.")
+        with self._result_data.lock:
+            
+            for datum in data:
+                if isinstance(datum, dict):
+                    if "metadata" in datum and "composite_metadata" in datum["metadata"]:
+
+                        marginalized_datum = self._marginalized_component_data([datum])
+                        try:
+                            composite_index = datum["metadata"]["composite_index"]
+                            while max(composite_index) > len(self._child_data):
+                                self.add_child_data(ExperimentData())
+                            composite_expdata = [self.child_data(i) for i in composite_index]
+                            for sub_expdata, sub_data in zip(composite_expdata, marginalized_datum):
+                                sub_expdata.add_data(sub_data)
+                            for inner_datum in datum["metadata"]["composite_metadata"]:
+                                if "composite_index" in inner_datum:
+                                    for sub_expdata in composite_expdata:
+                                        self.add_data(inner_datum,inner_comoposite_flag=False)
+                        except IndexError or RuntimeError or AnalysisError:
+                            new_child = ExperimentData()
+                            for inner_datum in marginalized_datum:
+                                new_child.add_data(inner_datum)
+                        
+                        self._result_data.append(datum)
+
+                    elif "composite_metadata" in datum:
+
+                        marginalized_datum = self._marginalized_component_data([datum])
+                        try:
+                            composite_index = datum["composite_index"]
+                            composite_expdata = [self.child_data(i) for i in composite_index]
+                            for sub_expdata, sub_data in zip(composite_expdata, marginalized_datum):
+                                sub_expdata.add_data(sub_data)
+                            for inner_datum in datum["composite_metadata"]:
+                                if "composite_index" in inner_datum:
+                                    for sub_expdata in composite_expdata:
+                                        self.add_data(inner_datum,inner_comoposite_flag=False)
+                        except IndexError or RuntimeError or AnalysisError:
+                            new_child = ExperimentData()
+                            for inner_datum in marginalized_datum:
+                                new_child.add_data(inner_datum)
+                    else:
+                        try:
+                            if kwargs["inner_comoposite_flag"]:
+                                self._result_data.append(datum)
+                        except KeyError:
+                            self._result_data.append(datum)
+
+                elif isinstance(datum, Result):
+                    self._add_result_data(datum)
+                else:
+                    raise TypeError(f"Invalid data type {type(datum)}.")
 
     def _add_canonical_dict_data(self, data: dict):
         """A common subroutine to store result dictionary in canonical format.
